@@ -28,19 +28,16 @@ uint8_t board[10][10] = {
     { 0,0,0,0,0,0,0,0,3,0 }
 };
 
-uint8_t original_board[10][10];
-int opponent_checksum[10] = {0};
-int row_hits[10] = {0}; // Treffer pro Zeile zählen
-int my_remaining = 30;
-
-int next_x = 0;
+uint8_t original_board[10][10]; //Speichert das ursprüngliche feld für SPielende
+int opponent_checksum[10] = {0}; //Checksum des Gegners
+int my_remaining = 30; // Eigene verbelibende schiffsteile
+int next_x = 0; //Koordinaten für den nächsten Schuss
 int next_y = 0;
+int sf_received = 0; //zählt empfangede HD_SF_Zeilen
+char opponent_sf[10][11]; // speichert gegnerisches Feld
+int game_over_board_sent = 0; // flag ob das eigene board schon gesendet wurde
 
-int sf_received = 0;
-char opponent_sf[10][11];
-int game_over_board_sent = 0;
-
-int _write(int handle, char* data, int size) {
+int _write(int handle, char* data, int size) { //erlaubt printf ausgaben über uart2
     for (int i = 0; i < size; i++) {
         while (!(USART2->ISR & USART_ISR_TXE));
         USART2->TDR = data[i];
@@ -67,37 +64,21 @@ void send_own_checksum() {
 }
 
 void send_next_shot() {
-    while (next_x < 10) {
-        if (opponent_checksum[next_x] == 0) {
-            next_x++;
-            next_y = 0;
-            continue;
-        }
-
-        if (row_hits[next_x] >= opponent_checksum[next_x]) {
-            next_x++;
-            next_y = 0;
-            continue;
-        }
-
-        if (next_y < 10) {
-            printf("DH_BOOM_%d_%d\n", next_x, next_y);
-            next_y++;
-            return;
-        } else {
+    if (next_x < 10) {
+        printf("DH_BOOM_%d_%d\n", next_x, next_y);
+        next_y++;
+        if (next_y >= 10) {
             next_y = 0;
             next_x++;
         }
     }
-
-    // Kein weiterer sinnvoller Schuss → nichts tun oder Dummy senden
-    printf("DH_BOOM_0_0\n");
 }
 
-void send_game_over_board() {
+void send_game_over_board() {  // das eigene Feld (original_Board) als Dh_SF0D....senden
     for (int row = 0; row < 10; row++) {
         printf("DH_SF%dD", row);
         for (int col = 0; col < 10; col++) {
+         
             printf("%d", original_board[row][col]);
         }
         printf("\n");
@@ -105,19 +86,18 @@ void send_game_over_board() {
     game_over_board_sent = 1;
 }
 
-void handle_start(const char* line){
+void handle_start(const char* line){ //Spielstart vearbeiten
     if (strncmp(line, "HD_START", 8) == 0) {
         send_start_reply();
         state = STATE_GAME;
     }
 }
 
-void handle_checksum(const char* line) {
+void handle_checksum(const char* line) { //checksum vom geegner einlesen
     if (strncmp(line, "HD_CS_", 6) == 0) {
         for (int i = 0; i < 10; i++) {
             opponent_checksum[i] = line[6 + i] - '0';
         }
-
         send_own_checksum();
     }
 }
@@ -138,15 +118,10 @@ void handle_incoming_shot(const char* line) {
             printf("DH_BOOM_M\n");
         }
         send_next_shot();
-    } else if (strncmp(line, "DH_BOOM_H", 9) == 0) {
-        // Treffer auf Gegner: zähle Treffer in der richtigen Zeile
-        if (next_x > 0 && next_x <= 10) {
-            row_hits[next_x - 1]++;
-        }
     }
 }
 
-void handle_sf_line(const char* line) {
+void handle_sf_line(const char* line) { // HD_SF Zeile verarbeiten
     if (strncmp(line, "HD_SF", 5) == 0) {
         int row = line[5] - '0';
         strncpy(opponent_sf[row], &line[7], 10);
@@ -156,7 +131,10 @@ void handle_sf_line(const char* line) {
 }
 
 void reset_game_state() {
+    // Spielfeld zurücksetzen
     memcpy(board, original_board, sizeof(board));
+
+    // Zähler und Flags zurücksetzen
     my_remaining = 30;
     next_x = 0;
     next_y = 0;
@@ -164,10 +142,14 @@ void reset_game_state() {
     game_over_board_sent = 0;
     state = STATE_INIT;
 
+    // Gegnerdaten leeren
     memset(opponent_checksum, 0, sizeof(opponent_checksum));
     memset(opponent_sf, 0, sizeof(opponent_sf));
-    memset(row_hits, 0, sizeof(row_hits));
+
+    // Optional: UART-Puffer leeren oder line[] zurücksetzen, falls nötig
 }
+
+
 
 void handle_line(const char* line) {
     if (state == STATE_INIT) {
@@ -176,6 +158,7 @@ void handle_line(const char* line) {
         handle_checksum(line);
         handle_incoming_shot(line);
 
+        // Wenn gegner gewinnt wechsel ich dadurch in state result
         if (strncmp(line, "HD_SF", 5) == 0) {
             state = STATE_RESULT;
             sf_received = 0;
@@ -187,9 +170,9 @@ void handle_line(const char* line) {
 
             if (sf_received == 10) {
                 if (!game_over_board_sent) {
-                    send_game_over_board();
+                    send_game_over_board(); // Wenn gewonnen, sende dein eigenes Board
                 }
-                reset_game_state();
+                reset_game_state(); // Vorbereitung auf nächste Runde
             }
         }
     }
