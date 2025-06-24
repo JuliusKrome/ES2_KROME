@@ -5,7 +5,9 @@
 
 
 #define BAUDRATE 115200
-#define APB_FREQ 48000000 
+#define APB_FREQ 48000000
+#define SPEAKER_PIN 8
+
 
 typedef enum {
     STATE_INIT,
@@ -42,8 +44,8 @@ int sf_received = 0;
 char opponent_sf[10][11];
 int game_over_board_sent = 0;
 
-char line[64];
-int idx = 0;
+char line[64];  // Puffer für empfangende Textzeile über UART
+int idx = 0;    // Index um empfangede Zeichen im Puffer 
 
 
 //Ausgabe nicht per Terminal sonder über UART schnittstelle
@@ -54,8 +56,26 @@ int _write(int handle, char* data, int size) { // wenn printf ausgeführt wird, 
     }
     return size;
 }
+// -------- speaker -------------//
+
+//Hohes Piepsen (Gibt kurzen hohen piebsto aus)
+void speaker_high(void) {
+    uint32_t arr = (APB_FREQ / 1047) - 1;  
+    TIM3->ARR = arr;
+    TIM3->CCR3 = arr / 2;
+    for (volatile int i = 0; i < APB_FREQ / 80; i++) __NOP();  
+    TIM3->CCR3 = 0;
+}
 
 
+//Tiefes Piepsen (Gibt kurzen tieferen Piebston aus)
+void speaker_low(void) {
+    uint32_t arr = (APB_FREQ ) - 1;   
+    TIM3->ARR = arr;
+    TIM3->CCR3 = arr / 2;
+    for (volatile int i = 0; i < APB_FREQ / 80; i++) __NOP();  
+    TIM3->CCR3 = 0;
+}
 
 
 
@@ -112,8 +132,9 @@ void handle_incoming_shot(void) {
             board[x][y] = 0; //wenn ungleich dann FEld auf Nullsetzen, weil SCHiffsteil wurde getroffen
             my_remaining--;   // meine schiffsteile runterzäglen
             if (my_remaining == 0 && !game_over_board_sent) { // ist der auslöser dafür das ich verloren habe und mein board schicke
-                
+                speaker_high();     // Tiefer Ton bei Niederlage
                 send_game_over_board(); // sendet sofort mein board 
+                
                 state = STATE_RESULT; 
                 return; // verhindert das ich noch schieße obwohl ich verloren habe weil sonst der code hier srutner ausgeführt wird
             }
@@ -158,8 +179,8 @@ void send_next_shot() {
 
 
 void handle_sf_line(void) {
-    int row = line[5] - '0'; //48 asci schreibweise 
-    strncpy(opponent_sf[row], &line[7], 10);
+    int row = line[5] - '0'; // -48 wegen ASCI 
+    strncpy(opponent_sf[row], &line[7], 10); //Ziel: String row im 2D Array opponent_sf QUelle: Adressendesn8. Zeichens Länge: genau 10 Zeichen
     opponent_sf[row][10] = '\0';
     sf_received++;
 }
@@ -249,8 +270,10 @@ void nachricht_handler(void) {  //
             if (sf_received == 10) {                    //ganzes gegener board erhalten?
                 
                                                         //Nur wenn ich gewonnen habe, habe ich noch kein Board geschickt. Also ganes gegner Board erhalten also schicke ich mein
-                if (!game_over_board_sent) {            //verhindert wenn ich gewonnen habe das nochmal ein board geschcikt wird
+                if (!game_over_board_sent) {
+                    speaker_low();    // Hoher Ton bei Sieg            //verhindert wenn ich gewonnen habe das nochmal ein board geschcikt wird
                     send_game_over_board();
+                    
                 }
 
                 verify_opponent_board();
@@ -281,7 +304,27 @@ int main(void) {
     USART2->BRR = APB_FREQ / BAUDRATE;                          // Baudrate einstellen (z. B. 48000000 / 115200)
     USART2->CR1 |= USART_CR1_TE | USART_CR1_RE | USART_CR1_UE;  // Transmitter aktivieren, Receiver aktivieren, USART aktivieren
 
-   
+    // init speaker
+    
+    RCC->AHBENR  |= RCC_AHBENR_GPIOCEN;         // Takt für GPIOC aktivieren
+    RCC->APB1ENR |= RCC_APB1ENR_TIM3EN;         // Takt für Timer 3 aktivieren
+
+    // PC8 in Alternativfunktionsmodus setzen (AF = 10)
+    GPIOC->MODER &= ~(0b11 << (2 * SPEAKER_PIN)); // Bits löschen
+    GPIOC->MODER |=  (0b10 << (2 * SPEAKER_PIN)); // AF-Modus setzen
+
+    // PC8 auf AF0 (Timer3_CH3) konfigurieren
+    GPIOC->AFR[1]  &= ~(0xF << ((SPEAKER_PIN - 8) * 4)); // AF-Feld löschen
+    GPIOC->AFR[1]  |=  (0x0 << ((SPEAKER_PIN - 8) * 4)); // AF0 setzen
+
+    GPIOC->OSPEEDR |= 0b11 << (2 * SPEAKER_PIN); // hohe Ausgangsgeschwindigkeit
+
+    TIM3->PSC = 0;                    // Prescaler auf 0 → 48 MHz Timer-Frequenz
+    TIM3->CCMR2 &= ~(0xFF);          // Kanal-Register löschen (Channel 3 & 4)
+    TIM3->CCMR2 |= 0b110 << 4;       // PWM Mode 1 für Channel 3 (OC3M = 110)
+    TIM3->CCER |= 1 << 8;            // Channel 3 Output Enable (CC3E = 1)
+    TIM3->CR1 |= 1;                  // Timer starten (CEN = 1)
+
 
 
     
